@@ -3,45 +3,52 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"gobot.io/x/gobot"
+	"gobot.io/x/gobot/drivers/aio"
 	"gobot.io/x/gobot/drivers/gpio"
 	"gobot.io/x/gobot/platforms/firmata"
+
+	"flag"
 
 	serial "go.bug.st/serial.v1"
 )
 
-const LASERTHRESHOLD = 100
-const CLOCK = 500 * time.Millisecond
-const LIGHTSENSOR = "5"
-const LASERPIN = "10"
-const COMPORT = "COM4"
+var lightLevel int
+var lightSensorPin string
+var laserPin string
+var device string
+var clockSpeed int64
 
-var bitsToTransmit chan bool
-var bytesReceived chan byte
-var firmataAdaptor *firmata.Adaptor
-var laserDriver Emitter
-var rdr *Reader
-var snd *Sender
+func init() {
+	flag.IntVar(&lightLevel, "LightLevel", 100, "--LightLevel=100 //Represents the amount of resistance measured when the laser is detected.  Higher values represent not detecting the laser, while lower values detect the laser as on.")
+	flag.StringVar(&lightSensorPin, "LightPin", "5", "--Light=5 //The pin in which the light sensor is connected")
+	flag.StringVar(&laserPin, "LaserPin", "10", "--Laser=10 //The pin in which the laser is connected")
+	flag.Int64Var(&clockSpeed, "Clock", 50, "--Clock=500 //Interval for sending and receiving data in Milliseconds")
+	flag.StringVar(&device, "Device", "COM4", "--Device=COM4 //The serial device used for Firmata communication")
+}
 
 func main() {
-	bitsToTransmit = make(chan bool, 10000)
-	bytesReceived = make(chan byte, 100)
+	flag.Parse()
 
-	firmataAdaptor = firmata.NewAdaptor(COMPORT)
-	laserDriver = gpio.NewLedDriver(firmataAdaptor, LASERPIN)
+	bitsToTransmit := make(chan bool, 10000)
+	bytesReceived := make(chan byte, 100)
+
+	firmataAdaptor := firmata.NewAdaptor(device)
+	laserDriver := gpio.NewLedDriver(firmataAdaptor, laserPin)
 
 	mode := &serial.Mode{DataBits: 8, Parity: serial.OddParity, StopBits: serial.TwoStopBits}
 
-	rdr = NewReader(bytesReceived, mode)
-	snd = NewSender(bitsToTransmit, mode)
+	decoder := NewDecoder(bytesReceived, mode)
+	encoder := NewEncoder(bitsToTransmit, mode)
 
 	robot := gobot.NewRobot("bot",
 		[]gobot.Connection{firmataAdaptor},
 		[]gobot.Device{},
 		func() {
-			go detectAndSendInput(snd)
+			go detectAndSendInput(os.Stdin, encoder)
 			go func() {
 				for {
 					select {
@@ -50,12 +57,12 @@ func main() {
 					}
 				}
 			}()
-			tick := time.Tick(CLOCK)
+			tick := time.Tick(time.Duration(clockSpeed) * time.Millisecond)
 			for {
 				select {
 				case <-tick:
-					checkLightSensor(firmataAdaptor, LIGHTSENSOR, LASERTHRESHOLD, rdr)
-					checkLaserChannel(laserDriver)
+					checkLaserChannel(bitsToTransmit, Laser{laserDriver})
+					checkLightSensor(firmataAdaptor, lightSensorPin, lightLevel, decoder)
 				}
 			}
 		},
@@ -69,37 +76,40 @@ type Emitter interface {
 	Off() error
 }
 
-type AnalogSensor interface {
-	AnalogRead(pin string) (val int, err error)
+type Laser struct {
+	Emitter
+}
+
+func (l Laser) Send(b bool) error {
+	if b {
+		return l.On()
+	}
+	return l.Off()
+}
+func checkLaserChannel(c chan bool, l Laser) error {
+	select {
+	case b := <-c:
+		return l.Send(b)
+	}
 }
 
 type BitReader interface {
 	Read(bit bool) error
 }
 
-func checkLaserChannel(e Emitter) (done bool) {
-	select {
-	case b := <-bitsToTransmit:
-		if b {
-			e.On()
-		} else {
-			e.Off()
-		}
-	default:
-		return true
+func checkLightSensor(r aio.AnalogReader, pin string, threshold int, br BitReader) (err error) {
+	i := 0
+	if i, err = r.AnalogRead(pin); err != nil {
+		return err
 	}
+	br.Read(i < threshold)
 	return
 }
 
-func checkLightSensor(s AnalogSensor, pin string, threshold int, r BitReader) {
-	i, _ := s.AnalogRead(pin)
-	r.Read(i < threshold)
-}
-
-func detectAndSendInput(w io.Writer) {
+func detectAndSendInput(r io.Reader, w io.Writer) {
 	in := ""
 	for {
-		fmt.Scanln(&in)
+		fmt.Fscanln(r, &in)
 		if _, err := w.Write([]byte(in)); err != nil {
 			panic(err)
 		}

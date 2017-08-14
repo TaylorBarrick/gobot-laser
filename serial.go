@@ -6,16 +6,16 @@ import (
 	serial "go.bug.st/serial.v1"
 )
 
-type Sender struct {
+type Encoder struct {
 	c    chan bool
 	mask uint16
 	mode *serial.Mode
 }
 
-func NewSender(c chan bool, mode *serial.Mode) *Sender {
-	var s Sender
-	s.c = c
-	s.mode = mode
+func NewEncoder(out chan bool, mode *serial.Mode) *Encoder {
+	var e Encoder
+	e.c = out
+	e.mode = mode
 	trailingBits := 0
 	switch mode.StopBits {
 	case serial.OneStopBit:
@@ -30,18 +30,18 @@ func NewSender(c chan bool, mode *serial.Mode) *Sender {
 	default:
 		trailingBits++
 	}
-	s.mask = 1 << uint16(mode.DataBits+trailingBits)
-	return &s
+	e.mask = 1 << uint16(mode.DataBits+trailingBits)
+	return &e
 }
 
-func (s *Sender) Write(p []byte) (n int, err error) {
+func (e *Encoder) Write(p []byte) (n int, err error) {
 	for i, b := range p {
 		ub := uint16(b)
-		if pb := parity(b, s.mode.Parity); *pb {
+		if pb := parity(b, e.mode.Parity); *pb {
 			ub = ub<<1 | 1
 		}
-		ub = s.mask | ub<<uint(s.mode.StopBits)
-		feedChannel(ub, 4+s.mode.DataBits, s.c)
+		ub = e.mask | ub<<uint(e.mode.StopBits)
+		feedChannel(ub, 4+e.mode.DataBits, e.c)
 		n = i
 	}
 	return
@@ -81,7 +81,7 @@ func feedChannel(ub uint16, packetSize int, c chan bool) {
 	}
 }
 
-type Reader struct {
+type Decoder struct {
 	c       chan byte
 	buffer  byte
 	reading bool
@@ -89,37 +89,37 @@ type Reader struct {
 	mode    *serial.Mode
 }
 
-func NewReader(c chan byte, mode *serial.Mode) *Reader {
-	return &Reader{c: c, mode: mode}
+func NewDecoder(out chan byte, mode *serial.Mode) *Decoder {
+	return &Decoder{c: out, mode: mode}
 }
 
-func (r *Reader) Read(bit bool) (err error) {
-	if !r.reading {
-		r.reading = bit
+func (d *Decoder) Read(bit bool) (err error) {
+	if !d.reading {
+		d.reading = bit
 		return
 	}
 
-	if r.pos < r.mode.DataBits {
+	if d.pos < d.mode.DataBits {
 		var b byte
 		if bit {
 			b = 1
 		}
-		r.buffer = r.buffer<<1 | b
+		d.buffer = d.buffer<<1 | b
 	}
 
-	if r.pos == r.mode.DataBits {
-		if pb := parity(r.buffer, r.mode.Parity); pb != nil && *pb != bit {
+	if d.pos == d.mode.DataBits {
+		if pb := parity(d.buffer, d.mode.Parity); pb != nil && *pb != bit {
 			return errors.New("Parity Error")
 		}
-		r.c <- r.buffer
+		d.c <- d.buffer
 	}
 
-	r.pos++
+	d.pos++
 
-	if r.pos == r.mode.DataBits+3 {
-		r.reading = false
-		r.pos = 0
-		r.buffer = 0x00
+	if d.pos == d.mode.DataBits+3 {
+		d.reading = false
+		d.pos = 0
+		d.buffer = 0x00
 		return nil
 	}
 
