@@ -12,8 +12,6 @@ import (
 	"gobot.io/x/gobot/platforms/firmata"
 
 	"flag"
-
-	serial "go.bug.st/serial.v1"
 )
 
 var lightLevel int
@@ -39,7 +37,7 @@ func main() {
 	firmataAdaptor := firmata.NewAdaptor(device)
 	laserDriver := gpio.NewLedDriver(firmataAdaptor, laserPin)
 
-	mode := &serial.Mode{DataBits: 8, Parity: serial.OddParity, StopBits: serial.TwoStopBits}
+	mode := &Mode{DataBits: 8, Parity: OddParity, StopBits: TwoStopBits}
 
 	decoder := NewDecoder(bytesReceived, mode)
 	encoder := NewEncoder(bitsToTransmit, mode)
